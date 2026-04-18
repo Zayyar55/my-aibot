@@ -1,6 +1,7 @@
 import os
 import requests
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -8,12 +9,12 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 # Tokens
 HF_TOKEN = "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"
 TG_TOKEN = "8774327296:AAHfzzOTEh0eShFmCLH78fTHR3XVNgk5qFM"
-# ပိုမိုမြန်ဆန်ပြီး Error နည်းတဲ့ Model ကို သုံးထားပါတယ်
-API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+# Using a more stable model
+API_URL = "https://api-inference.huggingface.co/models/google/gemma-1.1-7b-it"
 
 headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
-# Render အတွက် Port Binding လုပ်ပေးတဲ့အပိုင်း
+# Port Binding for Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -26,41 +27,41 @@ def run_health_check():
     server.serve_forever()
 
 def query_ai(text):
-    payload = {
-        "inputs": f"<s>[INST] {text} [/INST]",
-        "parameters": {"max_new_tokens": 500, "return_full_text": False}
-    }
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
-        result = response.json()
-        
-        if isinstance(result, list):
-            return result[0].get('generated_text', '').strip()
-        elif isinstance(result, dict) and "error" in result:
-            if "loading" in result.get("error", "").lower():
-                return "Model is loading. Please try again in 30 seconds."
-            return f"AI Error: {result.get('error')}"
-        return "I couldn't process that. Please try again."
-    except Exception as e:
-        return f"Connection Error: {str(e)}"
+    payload = {"inputs": text, "parameters": {"max_new_tokens": 500}}
+    
+    # Simple retry logic for stability
+    for _ in range(3):
+        try:
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=25)
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    return result[0].get('generated_text', '').strip()
+                elif isinstance(result, dict) and "generated_text" in result:
+                    return result["generated_text"].strip()
+            time.sleep(2)
+        except:
+            continue
+            
+    return "The AI is busy or loading. Please try again in 30 seconds."
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    # စာပို့လိုက်ရင် Bot အလုပ်လုပ်နေမှန်းသိအောင် status ပြမယ်
+    # Initial response to show the bot is working
     status_msg = await update.message.reply_text("Thinking... ⏳")
     
     ai_response = query_ai(user_text)
     
-    # ရလာတဲ့ အဖြေကို status စာသားနေရာမှာ အစားထိုးမယ်
+    # Update with the final AI response
     await status_msg.edit_text(ai_response)
 
 if __name__ == '__main__':
-    # Start health check server
+    # Start the server to keep Render alive
     threading.Thread(target=run_health_check, daemon=True).start()
     
-    # Start Telegram Bot
+    # Start Telegram Polling
     app = ApplicationBuilder().token(TG_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("Bot is starting on Render...")
+    print("Bot is starting...")
     app.run_polling()
